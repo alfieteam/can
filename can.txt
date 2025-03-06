@@ -1,0 +1,237 @@
+#include <SPI.h>
+#include <mcp2515.h>
+
+MCP2515 mcp2515(10);  // Подключаем MCP2515 к пину 10 (CS)
+
+void setup() {
+  Serial.begin(9600);
+
+  mcp2515.setBitrate(CAN_500KBPS, MCP_8MHZ);
+  mcp2515.setNormalMode();  // Переводим в нормальный режим
+
+  randomSeed(analogRead(0)); // Генератор случайных чисел
+}
+
+void loop() {
+  long randomNumber = random(0, 1000);  // Генерируем случайное число
+  Serial.print("Отправляем число: ");
+  Serial.println(randomNumber);
+
+  struct can_frame message;  // Структура для CAN-сообщений
+  message.can_id  = 0x01;  // ID сообщения
+  message.can_dlc = sizeof(randomNumber);  // Длина данных
+  if (message.can_dlc > 4) {
+    message.can_dlc = 4;  // Максимальная длина для одного сообщения CAN
+  }
+
+  memcpy(message.data, &randomNumber, sizeof(randomNumber));  // Копируем данные в message.data
+
+  if (mcp2515.sendMessage(&message)) {  // Отправляем сообщение
+    Serial.println("Сообщение отправлено");
+  } else {
+    Serial.println("Ошибка отправки");
+    // Выводим дополнительные данные для диагностики
+    byte status = mcp2515.getStatus();
+    Serial.print("Статус CAN: ");
+    Serial.println(status, HEX);  // Выводим код статуса
+    delay(100);
+  }
+
+  delay(2000);  // Задержка 2 секунды между отправками сообщений
+}
+
+
+
+
+
+
+
+#include <SPI.h>
+#include <mcp2515.h>
+
+MCP2515 mcp2515(10);  // Подключаем MCP2515 к пину 10 (CS)
+
+void setup() {
+  Serial.begin(9600);
+
+  // Настройка битрейта и режима CAN
+  mcp2515.setBitrate(CAN_500KBPS, MCP_8MHZ);
+  mcp2515.setNormalMode();  // Переводим в нормальный режим
+  Serial.println("MCP2515 инициализирован");
+}
+
+void loop() {
+  struct can_frame message;  // Структура для приема CAN-сообщений
+  
+  // Проверяем, если сообщение поступило
+  if (mcp2515.readMessage(&message)) {
+    Serial.print("Получено сообщение с ID: ");
+    Serial.println(message.can_id, HEX);
+    
+    // Если это сообщение с ID 0x01
+    if (message.can_id == 0x01) {
+      long receivedNumber = 0;
+      memcpy(&receivedNumber, message.data, message.can_dlc);  // Копируем данные в переменную
+
+      Serial.print("Получено число: ");
+      Serial.println(receivedNumber);
+
+      // Отправляем обратно подтверждение
+      long responseNumber = receivedNumber + 2;  // Например, увеличиваем число
+      Serial.print("Отправляем число: ");
+      Serial.println(responseNumber);
+
+      // Структура для ответа
+      struct can_frame responseMessage;
+      responseMessage.can_id = 0x02;  // ID ответа
+      responseMessage.can_dlc = sizeof(responseNumber);  // Длина данных
+      if (responseMessage.can_dlc > 4) {
+         responseMessage.can_dlc = 4;  // Максимальная длина для одного сообщения CAN
+      }
+      memcpy(responseMessage.data, &responseNumber, sizeof(responseNumber));  // Копируем данные
+
+      // Отправка ответа
+      if (mcp2515.sendMessage(&responseMessage)) {
+        Serial.println("Ответ отправлен");
+      } else {
+        Serial.println("Ошибка отправки ответа");
+      }
+      // Выводим дополнительные данные для диагностики
+    byte status = mcp2515.getStatus();
+    Serial.print("Статус CAN: ");
+    Serial.println(status, HEX);  // Выводим код статуса
+    delay(100);
+    }
+  }
+
+  delay(1000);  // Задержка между циклом
+}
+
+
+
+
+------Исправленный-------
+Первый отправитель:
+
+#include <SPI.h>
+#include <mcp2515.h>
+
+MCP2515 mcp2515(10);  // Подключаем MCP2515 к пину 10 (CS)
+
+unsigned long previousMillis = 0;  // Время последней отправки сообщения
+const long interval = 2000;  // Интервал между отправками сообщений (2 секунды)
+
+void setup() {
+  Serial.begin(9600);
+
+  mcp2515.setBitrate(CAN_500KBPS, MCP_8MHZ);
+  mcp2515.setNormalMode();  // Переводим в нормальный режим
+
+  randomSeed(analogRead(0)); // Генератор случайных чисел
+}
+
+void loop() {
+  unsigned long currentMillis = millis();  // Получаем текущее время
+
+  if (currentMillis - previousMillis >= interval) {
+    previousMillis = currentMillis;  // Обновляем время последней отправки
+
+    long randomNumber = random(0, 1000);  // Генерируем случайное число
+    Serial.print("Отправляем число: ");
+    Serial.println(randomNumber);
+
+    struct can_frame message;  // Структура для CAN-сообщений
+    message.can_id  = 0x01;  // ID сообщения
+    message.can_dlc = sizeof(randomNumber);  // Длина данных
+    if (message.can_dlc > 4) {
+      message.can_dlc = 4;  // Максимальная длина для одного сообщения CAN
+    }
+
+    memcpy(message.data, &randomNumber, sizeof(randomNumber));  // Копируем данные в message.data
+
+    if (mcp2515.sendMessage(&message)) {  // Отправляем сообщение
+      Serial.println("Сообщение отправлено");
+    } else {
+      Serial.println("Ошибка отправки");
+      // Выводим дополнительные данные для диагностики
+      byte status = mcp2515.getStatus();
+      Serial.print("Статус CAN: ");
+      Serial.println(status, HEX);  // Выводим код статуса
+    }
+  }
+
+  // Здесь можно делать другие операции, пока ждём следующей отправки
+}
+
+
+
+Ответка:
+
+#include <SPI.h>
+#include <mcp2515.h>
+
+MCP2515 mcp2515(10);  // Подключаем MCP2515 к пину 10 (CS)
+
+unsigned long previousMillis = 0;  // Время последнего цикла обработки
+const long interval = 1000;  // Интервал между циклами (1000 миллисекунд = 1 секунда)
+
+void setup() {
+  Serial.begin(9600);
+
+  // Настройка битрейта и режима CAN
+  mcp2515.setBitrate(CAN_500KBPS, MCP_8MHZ);
+  mcp2515.setNormalMode();  // Переводим в нормальный режим
+  Serial.println("MCP2515 инициализирован");
+}
+
+void loop() {
+  unsigned long currentMillis = millis();  // Получаем текущее время
+
+  if (currentMillis - previousMillis >= interval) {
+    previousMillis = currentMillis;  // Обновляем время последнего цикла
+
+    struct can_frame message;  // Структура для приема CAN-сообщений
+
+    // Проверяем, если сообщение поступило
+    if (mcp2515.readMessage(&message)) {
+      Serial.print("Получено сообщение с ID: ");
+      Serial.println(message.can_id, HEX);
+
+      // Если это сообщение с ID 0x01
+      if (message.can_id == 0x01) {
+        long receivedNumber = 0;
+        memcpy(&receivedNumber, message.data, message.can_dlc);  // Копируем данные в переменную
+
+        Serial.print("Получено число: ");
+        Serial.println(receivedNumber);
+
+        // Отправляем обратно подтверждение
+        long responseNumber = receivedNumber + 2;  // Например, увеличиваем число
+        Serial.print("Отправляем число: ");
+        Serial.println(responseNumber);
+
+        // Структура для ответа
+        struct can_frame responseMessage;
+        responseMessage.can_id = 0x02;  // ID ответа
+        responseMessage.can_dlc = sizeof(responseNumber);  // Длина данных
+        memcpy(responseMessage.data, &responseNumber, sizeof(responseNumber));  // Копируем данные
+
+
+
+        // Отправка ответа
+        if (mcp2515.sendMessage(&responseMessage)) {
+          Serial.println("Ответ отправлен");
+        } else {
+          Serial.println("Ошибка отправки ответа");
+        }
+
+        // Выводим дополнительные данные для диагностики
+        byte status = mcp2515.getStatus();
+        Serial.print("Статус CAN: ");
+        Serial.println(status, HEX);  // Выводим код статуса
+      }
+    }
+  }
+
+  // Здесь можно делать другие операции между циклами, не блокируя выполнение программы
+}
