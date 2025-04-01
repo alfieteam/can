@@ -1,0 +1,80 @@
+#include <SPI.h>
+#include <mcp2515.h>
+
+MCP2515 mcp2515(10); // CS пин
+
+void setup() {
+  Serial.begin(9600);
+  SPI.begin();
+
+  // Сброс MCP2515
+  mcp2515.reset();
+
+  // Настройка битрейта для CAN
+  if (mcp2515.setBitrate(CAN_500KBPS, MCP_8MHZ) != MCP2515::ERROR_OK) {
+    Serial.println("Failed to set bitrate.");
+    while (1);  // Зацикливаем, если установка битрейта не удалась
+  }
+
+  // Переводим MCP2515 в нормальный режим
+  mcp2515.setNormalMode();
+
+  Serial.println("MCP2515 initialized and set to normal mode.");
+}
+
+void loop() {
+  struct can_frame message;
+
+  // Проверка на входящие сообщения
+  if (mcp2515.readMessage(&message)) {
+    // Выводим полученные данные
+    Serial.print("Message received: ");
+    Serial.println(message.data[0], HEX);
+  } else {
+    // Если сообщения нет, выводим диагностическое сообщение
+    Serial.println("No message received.");
+  }
+
+  delay(100);  // Пауза перед следующим чтением сообщений
+}
+
+
+
+
+
+
+
+#include <SPI.h>
+#include <mcp2515.h>
+
+MCP2515 mcp2515(10); // CS пин
+
+void setup() {
+  Serial.begin(9600);
+  SPI.begin();
+
+  mcp2515.reset();
+  mcp2515.setBitrate(CAN_500KBPS, MCP_8MHZ);
+  mcp2515.setNormalMode();
+}
+
+void loop() {
+  struct can_frame message;
+  message.can_id = 0x100;    // ID сообщения
+  message.can_dlc = 1;       // Длина данных
+  message.data[0] = random(0, 255); // Генерация случайного числа для отправки
+
+  // Отправляем CAN сообщение
+  if (mcp2515.sendMessage(&message)) {
+    Serial.print("Message sent: ");
+    Serial.println(message.data[0], HEX);
+  } else {
+    Serial.println("Failed to send message.");
+    // Проверяем статус CAN контроллера на наличие ошибок
+    uint8_t status = mcp2515.getStatus();
+    Serial.print("CAN controller status: ");
+    Serial.println(status, HEX);
+  }
+
+  delay(1000); // Задержка 1 секунда перед следующим отправлением
+}
