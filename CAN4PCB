@@ -1,0 +1,302 @@
+1) Узел «рандом в CAN каждые 5 секунд»
+
+Отправляет каждые 5 c одно 32-битное число в кадре ID = 0x101 (можешь сменить).
+
+#include <SPI.h>
+#include <mcp2515.h>
+
+MCP2515 mcp2515(10); // CS
+const unsigned long PERIOD_MS = 5000;
+
+void setup() {
+  Serial.begin(9600);
+  SPI.begin();
+
+  mcp2515.reset();
+  mcp2515.setBitrate(CAN_500KBPS, MCP_8MHZ);
+  mcp2515.setNormalMode();
+
+  randomSeed(analogRead(A0));
+}
+
+void loop() {
+  static unsigned long t0 = 0;
+  unsigned long now = millis();
+  if (now - t0 >= PERIOD_MS) {
+    t0 = now;
+
+    uint32_t r = (uint32_t)random(0xFFFFFFFFUL);
+    struct can_frame msg;
+    msg.can_id  = 0x101;
+    msg.can_dlc = 4;
+    msg.data[0] = (byte)(r >> 24);
+    msg.data[1] = (byte)(r >> 16);
+    msg.data[2] = (byte)(r >> 8);
+    msg.data[3] = (byte)(r);
+
+    MCP2515::ERROR err = mcp2515.sendMessage(&msg);
+    if (err == MCP2515::ERROR_OK) {
+      Serial.print(F("Sent RAND: 0x"));
+      Serial.println(r, HEX);
+    } else {
+      Serial.print(F("Send error: "));
+      Serial.println((int)err);
+    }
+  }
+}
+
+2) Узел «слушает ON/OFF по адресу и щёлкает реле на D3»
+
+Слушает кадры с ID = 0x200 + NODE_ID (для этого узла NODE_ID = 2).
+Пейлоад — ASCII: "ON" / "OFF" / "TG" (toggle).
+При "ON" подаёт HIGH на D3 (если у тебя ключ инверсный — поменяй уровни).
+
+#include <SPI.h>
+#include <mcp2515.h>
+
+MCP2515 mcp2515(10); // CS
+
+#define NODE_ID   2
+#define RELAY_PIN 3
+
+void setup() {
+  pinMode(RELAY_PIN, OUTPUT);
+  digitalWrite(RELAY_PIN, LOW); // старт — выключено
+
+  Serial.begin(9600);
+  SPI.begin();
+
+  mcp2515.reset();
+  mcp2515.setBitrate(CAN_500KBPS, MCP_8MHZ);
+  mcp2515.setNormalMode();
+}
+
+void loop() {
+  struct can_frame rx;
+  if (mcp2515.readMessage(&rx) == MCP2515::ERROR_OK) {
+    if (rx.can_id == (0x200 + NODE_ID)) {
+      // Ожидаем "ON" / "OFF" / "TG"
+      if (rx.can_dlc >= 2 && rx.data[0]=='O' && rx.data[1]=='N') {
+        digitalWrite(RELAY_PIN, HIGH);
+      } else if (rx.can_dlc >= 3 && rx.data[0]=='O' && rx.data[1]=='F' && rx.data[2]=='F') {
+        digitalWrite(RELAY_PIN, LOW);
+      } else if (rx.can_dlc >= 2 && rx.data[0]=='T' && rx.data[1]=='G') {
+        digitalWrite(RELAY_PIN, !digitalRead(RELAY_PIN));
+      }
+    }
+  }
+}
+
+3) Узел «плавный NeoPixel-градиент из двух цветов + прием параметров по CAN»
+
+По умолчанию: C1=(255,0,0), C2=(0,0,255), скорость 20 мс/кадр.
+Слушает кадры с ID = 0x300 + NODE_ID (здесь NODE_ID = 3), DLC=7:
+[ speed_ms, C1.R, C1.G, C1.B, C2.R, C2.G, C2.B ]
+
+#include <SPI.h>
+#include <mcp2515.h>
+#include <Adafruit_NeoPixel.h>
+
+MCP2515 mcp2515(10); // CS
+
+#define NODE_ID    3
+#define LED_PIN    9
+#define LED_COUNT  168
+
+Adafruit_NeoPixel strip(LED_COUNT, LED_PIN, NEO_GRB + NEO_KHZ800);
+
+// Параметры по умолчанию
+byte c1[3] = {255, 0, 0};
+byte c2[3] = {0, 0, 255};
+byte speedMs = 20;
+
+unsigned long tAnim = 0;
+uint16_t phase = 0;
+
+static inline uint32_t lerpColor(byte r1, byte g1, byte b1,
+                                 byte r2, byte g2, byte b2, uint16_t t, uint16_t tMax) {
+  uint32_t r = ((uint32_t)r1 * (tMax - t) + (uint32_t)r2 * t) / tMax;
+  uint32_t g = ((uint32_t)g1 * (tMax - t) + (uint32_t)g2 * t) / tMax;
+  uint32_t b = ((uint32_t)b1 * (tMax - t) + (uint32_t)b2 * t) / tMax;
+  return (r<<16) | (g<<8) | b;
+}
+
+void showGradient() {
+  for (uint16_t i = 0; i < LED_COUNT; i++) {
+    uint16_t pos = ( (uint32_t)i * 65535UL / (LED_COUNT ? LED_COUNT : 1) + phase ) & 0xFFFF;
+    uint32_t col = lerpColor(c1[0], c1[1], c1[2], c2[0], c2[1], c2[2], pos, 65535);
+    strip.setPixelColor(i, col);
+  }
+  strip.show();
+}
+
+void setup() {
+  SPI.begin();
+
+  mcp2515.reset();
+  mcp2515.setBitrate(CAN_500KBPS, MCP_8MHZ);
+  mcp2515.setNormalMode();
+
+  strip.begin();
+  strip.clear();
+  strip.show();
+  tAnim = millis();
+}
+
+void loop() {
+  unsigned long now = millis();
+
+  // Анимация
+  if (now - tAnim >= (speedMs ? speedMs : 1)) {
+    tAnim = now;
+    phase += 400; // скорость «прокрутки» градиента
+    showGradient();
+  }
+
+  // Приём параметров
+  struct can_frame rx;
+  if (mcp2515.readMessage(&rx) == MCP2515::ERROR_OK) {
+    if (rx.can_id == (0x300 + NODE_ID) && rx.can_dlc == 7) {
+      byte s = rx.data[0];
+      speedMs = (s == 0) ? 1 : s;
+      c1[0]=rx.data[1]; c1[1]=rx.data[2]; c1[2]=rx.data[3];
+      c2[0]=rx.data[4]; c2[1]=rx.data[5]; c2[2]=rx.data[6];
+    }
+  }
+}
+
+4) Узел «вводим цвета в Serial → отправляем параметры узлу №3»
+
+Ожидает строку:
+RRGGBB RRGGBB SPEED
+Пример: FF0000 0000FF 20
+
+Шлёт кадр ID = 0x300 + DEST_NODE (по умолчанию 3), DLC=7, формат как выше.
+
+#include <SPI.h>
+#include <mcp2515.h>
+
+MCP2515 mcp2515(10); // CS
+
+#define DEST_NEOPIX  3   // узел с NeoPixel
+#define DEST_RELAY   2   // узел с реле (вторая плата)
+
+bool parseHexColor(const char* s, byte& r, byte& g, byte& b) {
+  if (*s == '#') s++;
+  auto hx = [](char c)->byte{
+    if (c>='0'&&c<='9') return c-'0';
+    if (c>='A'&&c<='F') return c-'A'+10;
+    if (c>='a'&&c<='f') return c-'a'+10;
+    return 0;
+  };
+  for (int i=0;i<6;i++) if (!isxdigit(s[i])) return false;
+  r = (hx(s[0])<<4) | hx(s[1]);
+  g = (hx(s[2])<<4) | hx(s[3]);
+  b = (hx(s[4])<<4) | hx(s[5]);
+  return true;
+}
+
+void sendRelayCmd(uint8_t nodeId, const char* cmdUpper) {
+  struct can_frame msg;
+  msg.can_id  = 0x200 + nodeId;
+  if (strcmp(cmdUpper, "ON") == 0) {
+    msg.can_dlc = 2; msg.data[0] = 'O'; msg.data[1] = 'N';
+  } else if (strcmp(cmdUpper, "OFF") == 0) {
+    msg.can_dlc = 3; msg.data[0] = 'O'; msg.data[1] = 'F'; msg.data[2] = 'F';
+  } else if (strcmp(cmdUpper, "TG") == 0 || strcmp(cmdUpper, "TOGGLE") == 0) {
+    msg.can_dlc = 2; msg.data[0] = 'T'; msg.data[1] = 'G';
+  } else {
+    Serial.println(F("Unknown relay cmd. Use: ON | OFF | TG"));
+    return;
+  }
+  MCP2515::ERROR err = mcp2515.sendMessage(&msg);
+  if (err == MCP2515::ERROR_OK) {
+    Serial.print(F("Relay cmd sent to node "));
+    Serial.print(nodeId);
+    Serial.print(F(": "));
+    Serial.println(cmdUpper);
+  } else {
+    Serial.print(F("Send error: "));
+    Serial.println((int)err);
+  }
+}
+
+void setup() {
+  Serial.begin(9600);
+  SPI.begin();
+
+  mcp2515.reset();
+  mcp2515.setBitrate(CAN_500KBPS, MCP_8MHZ); // поменяй на MCP_16MHZ если у тебя 16 МГц
+  mcp2515.setNormalMode();
+
+  Serial.println(F("Commands:"));
+  Serial.println(F("  <C1> <C2> <speed_ms>   e.g. FF0000 0000FF 20   (send to NeoPixel node)"));
+  Serial.println(F("  on | off | tg          (send to relay node 2)"));
+  Serial.println(F("  relay <id> <on|off|tg> (send to specific relay node)"));
+}
+
+void loop() {
+  static char line[64];
+  static uint8_t idx = 0;
+
+  while (Serial.available()) {
+    char c = Serial.read();
+    if (c == '\r') continue;
+    if (c == '\n') {
+      line[idx] = 0; idx = 0;
+
+      // ---- разбор строки ----
+      char *p = line;
+      while (*p==' ') p++;
+
+      // копия для токенизации
+      char *t1 = strtok(p, " ");
+      if (!t1) continue;
+
+      // приведём t1 к upper
+      for (char *q=t1; *q; ++q) *q = toupper(*q);
+
+      if (!strcmp(t1, "ON") || !strcmp(t1, "OFF") || !strcmp(t1, "TG")) {
+        // короткие команды на узел 2
+        sendRelayCmd(DEST_RELAY, t1);
+      } else if (!strcmp(t1, "RELAY")) {
+        char *t2 = strtok(NULL, " "); // id
+        char *t3 = strtok(NULL, " "); // cmd
+        if (!t2 || !t3) {
+          Serial.println(F("Usage: relay <id> <on|off|tg>"));
+        } else {
+          // upper для t3
+          for (char *q=t3; *q; ++q) *q = toupper(*q);
+          uint8_t id = (uint8_t)atoi(t2);
+          sendRelayCmd(id, t3);
+        }
+      } else {
+        // считаем, что это параметры градиента: C1 C2 SPEED
+        char *t2 = strtok(NULL, " ");
+        char *t3 = strtok(NULL, " ");
+        if (t2 && t3) {
+          byte r1,g1,b1,r2,g2,b2;
+          long sp = atol(t3);
+          if (parseHexColor(t1, r1,g1,b1) && parseHexColor(t2, r2,g2,b2) && sp >= 0 && sp <= 255) {
+            struct can_frame msg;
+            msg.can_id  = 0x300 + DEST_NEOPIX;
+            msg.can_dlc = 7;
+            msg.data[0] = (byte)(sp ? sp : 1);
+            msg.data[1] = r1; msg.data[2] = g1; msg.data[3] = b1;
+            msg.data[4] = r2; msg.data[5] = g2; msg.data[6] = b2;
+            MCP2515::ERROR err = mcp2515.sendMessage(&msg);
+            if (err == MCP2515::ERROR_OK) Serial.println(F("NeoPixel params sent."));
+            else { Serial.print(F("Send error: ")); Serial.println((int)err); }
+          } else {
+            Serial.println(F("Bad input. Example: FF0000 0000FF 20"));
+          }
+        } else {
+          Serial.println(F("Unknown command. Type: on | off | tg | relay <id> <on|off|tg> | <C1> <C2> <speed>"));
+        }
+      }
+      continue;
+    }
+    if (idx < sizeof(line)-1) line[idx++] = c;
+  }
+}
+
